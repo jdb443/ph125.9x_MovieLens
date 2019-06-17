@@ -1,2 +1,2 @@
-# ph125.9x_MovieLens
-Movie Lens Capstone Paper
+# PH125.9x_MovieLens
+## Jonathan Behar Movie Lens Capstone Paper

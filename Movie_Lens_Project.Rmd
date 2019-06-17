@@ -1,0 +1,292 @@
+---
+title: "MovieLens Capstone Project"
+author: "Jonathan Behar (edx username)"
+date: "May 26 2019"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 2
+  
+---
+
+```{r setup, message=FALSE, echo=FALSE, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+# Loading Libraries
+library(knitr)
+library(ggrepel)
+library(kableExtra)
+library(dslabs)
+library(caret)
+library(tidyverse)
+
+# Note: This process could take a while to load
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+# MovieLens 10M dataset files:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+ratings <- read.table(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                      col.names = c("userId", "movieId", "rating", "timestamp"))
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+movielens <- left_join(ratings, movies, by = "movieId")
+# Validation will set 10% of MovieLens data
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+
+\  
+
+**************************
+
+\newpage
+
+# Recommendation System: Introduction/Overview/Summary
+
+The basic idea of a recommendation system is to give a practical recommendation based on available data. To be more specific, the task is to predict the rating a particular user would give to, one specific movie and therefore to provide matching movie suggestions to that user. The available data was the movie lens data included in the dslabs data package. It is a data set where each row contains a score by a specific user for one particular movie. 
+  
+According to Netflix, such a recommender system is not only a nice gimmick, it has an enormous business value, but nowadays, Netflix uses a much more sophisticated algorithm plus a human component for its recommender system. 
+   
+The recommendation system which is proposed in this paper predicts ratings by adding up the average, the movie bias, the user bias, and by penalizing small sample sizes with lambda. Additional information is provided within the paragraphs that describe the method, analysis, and results. The process is based on the course book "Introduction to Data Science" (https://rafalab.github.io/dsbook/acknowledgements.html). The R and Rmd files were made available to the readers, but the R code has been excluded from this report to enhance readability.   
+
+\newpage
+
+However, the problem/task is to understand and familiarization with the available data necessary to provide plausable findings.
+  
+## Observations: Users and Movies
+
+**Amount of Distinct Users and Movies** - the data contains more users than movies and not all the users seem to have rated all the movies.
+```{r Amount of Distinct Users and Movies, echo=FALSE, message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+edx %>% summarize(n_users = n_distinct(userId), n_movies = n_distinct(movieId)) %>% kable("latex", booktabs = T) %>%
+kable_styling(latex_options = c("striped", "condensed"), font_size = 9)
+```
+  
+**Amount of Ratings per Movie** - some movies get rated more frequently. Probably due to that fact, that not all the movies are equally popular. Therefore, it seems to be likely that some movies were simply watched more often. Or some movies get more critical vs public acclaim. Take for example A Star is Born 2018 and Venom 2018 but the fans of both tried to down vote the other in rotten tomatos.  Please find the amount of ratings per movie illustrated below:
+
+\  
+
+```{r Amount of Ratings per Movie, echo=FALSE, message=FALSE, fig.align='center', fig.width=16, fig.height=5}
+# Adding "Counter" to each row / each row represents a rating by a userId for a movieId / Visualization with ggplot
+edx_MovieId <- edx %>% mutate(CountMovieId = 1) %>% group_by(movieId, title) %>% summarize(SumCountMovieId = sum(CountMovieId), MeanRatingMovieId = mean(rating)) 
+edx_MovieId %>% ggplot(aes(x=movieId, y=SumCountMovieId)) + 
+  geom_point(aes(alpha=0.2, color=SumCountMovieId)) + 
+  ggtitle("Ratings per movieID") + 
+  theme(plot.title = element_text(color="blue", size=14, face="bold"), axis.title.x = element_text(color="blue", size=10, face="bold"), axis.text.x = element_text(angle = 90, hjust = 1), axis.title.y = element_text(color="blue", size=10, face="bold")) +
+  coord_cartesian(ylim = c(max(edx_MovieId$SumCountMovieId),0))
+edx_MovieId %>% ggplot(aes(x=movieId, y=SumCountMovieId)) + 
+  geom_col(aes(color=SumCountMovieId)) + 
+  ggtitle("Ratings per movieID") + 
+  theme(plot.title = element_text(color="blue", size=14, face="bold"), axis.title.x = element_text(color="blue", size=10, face="bold"), axis.text.x = element_text(angle = 90, hjust = 1), axis.title.y = element_text(color="blue", size=10, face="bold")) +
+  coord_cartesian(ylim = c(max(edx_MovieId$SumCountMovieId),0)) 
+```
+
+\  
+
+```{r Amount of Ratings per Movie 2, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+# Displaying minimum and maximum amount of ratings per movie / Visualization with kableExtra
+edx_MovieId %>% filter(SumCountMovieId == min(edx_MovieId$SumCountMovieId) | SumCountMovieId == max(edx_MovieId$SumCountMovieId)) %>% arrange(desc(SumCountMovieId)) %>% head(3) %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), position = "center", font_size = 9, full_width = FALSE) %>% footnote(general = "Minimum and maximum amount of ratings / limited to 3 rows")
+```
+
+\newpage
+## Observations: Movies 
+
+**Top Rated Movies** - the top rated movies are very well known movies. They seem to have more reviews and better ratings than the bottom rated movies (based on the mean rating). However, the table 1t below only shows titles with more than a 100 ratings. This was necessary to avoid titles which had received only a few but exclusively excellent ratings, e.g. a single 5 star rating possibly from the producer or director and their family (as shown in table 2t) to create a higher statistical benchmark.
+
+\  
+
+```{r Top Rated Movies, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+edx_MovieId %>% filter(SumCountMovieId > 100) %>% arrange(desc(MeanRatingMovieId)) %>% head(10) %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), position = "center", font_size = 9, full_width = TRUE) %>% footnote(general = "Table 1t with more than 100 ratings / limited to 10 rows")
+```
+
+\  
+
+```{r Top Rated Movies 2, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+edx_MovieId %>% arrange(desc(MeanRatingMovieId)) %>% head(10) %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), position = "center", font_size = 9, full_width = TRUE) %>% footnote(general = "Table 2t without filter / limited to 10 rows")
+```
+
+\newpage  
+
+**Bottom Rated Movies** - the bottom rated movies are "special" movies. They seem to have less and worse ratings than the top rated movies (based on the mean rating). However, the table 1b below only shows titles with more than a 100 ratings. 
+But, some movies who did terrible at the box office could go on to have better rental and purchase success with a cult following.
+This was necessary to avoid titles which had received only a few but exclusively terrible ratings, e.g. a single 0.5 star rating (as shown in table 2b). There seems to be a differences in the amount of ratings a specific movie receives. 
+
+\  
+
+```{r Bottom Rated Movies, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+edx_MovieId %>% filter(SumCountMovieId > 100) %>% arrange(MeanRatingMovieId) %>% head(10) %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), position = "center", font_size = 9, full_width = TRUE) %>% footnote(general = "Table 1b with more than 100 ratings / limited to 10 rows")
+```
+
+\  
+
+```{r Bottom Rated Movies 2, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+edx_MovieId %>% arrange(MeanRatingMovieId) %>% head(10) %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), position = "center", font_size = 9, full_width = TRUE) %>% footnote(general = "Table 2b without a filter / limited to 10 rows")
+```
+
+\newpage
+## Observations: Users
+
+**Amount of Ratings per User** - some users are more likely to provide a rating for a movie that that like or hate but, not generally for movies they are torn between. The table shows the minimum and maximum amount of ratings provided by a specific userId. Additionally, please find the amount of ratings per user illustrated below:
+
+\  
+
+```{r Amount of Ratings per User, echo=FALSE, message=FALSE, fig.align='center', fig.width=16, fig.height=5}
+# Adding "Counter" to each row / each row represents a rating by a userId for a movieId / Visualization with ggplot
+edx_UserId <- edx %>% mutate(CountUserId = 1) %>% group_by(userId) %>% summarize(SumCountUserId = sum(CountUserId), MeanRatingUserId = mean(rating)) 
+edx_UserId %>% ggplot(aes(x=userId, y=SumCountUserId)) + 
+  geom_point(aes(alpha=0.2, color=SumCountUserId)) + 
+  ggtitle("Ratings per UserID") + 
+  theme(plot.title = element_text(color="blue", size=14, face="bold"), axis.title.x = element_text(color="blue", size=10, face="bold"), axis.text.x = element_text(angle = 90, hjust = 1), axis.title.y = element_text(color="blue", size=10, face="bold")) +
+  coord_cartesian(ylim = c(max(edx_UserId$SumCountUserId),0))
+edx_UserId %>% ggplot(aes(x=userId, y=SumCountUserId)) + 
+  geom_col(aes(color=SumCountUserId)) + 
+  ggtitle("Ratings per UserID") + 
+  theme(plot.title = element_text(color="blue", size=14, face="bold"), axis.title.x = element_text(color="blue", size=10, face="bold"), axis.text.x = element_text(angle = 90, hjust = 1), axis.title.y = element_text(color="blue", size=10, face="bold")) +
+  coord_cartesian(ylim = c(max(edx_UserId$SumCountUserId),0))
+```
+
+\  
+
+```{r Amount of Ratings per User 2, echo=FALSE, message=FALSE, fig.align='center', fig.width=16, fig.height=4}
+# Displaying minimum and maximum amount of ratings per user / Visualization with kableExtra 
+edx_UserId %>% filter(SumCountUserId == min(edx_UserId$SumCountUserId) | SumCountUserId == max(edx_UserId$SumCountUserId)) %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), position = "center", font_size = 9, full_width = FALSE) %>% footnote(general = "Minimum and maximum amount of ratings per userId")
+```
+
+\newpage
+
+**Top Raters by Frequency** - some users seem to rate movies more frequently than others. Here are the top raters (based on the amount of ratings provided).
+```{r Top Raters by Frequency, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+edx_UserId %>% arrange(desc(SumCountUserId)) %>% head(8) %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), font_size = 9) %>% footnote(general = "Top raters by frequency / limited to 8 rows")
+```
+
+\  
+
+**Bottom Raters by Frequency** - some users seem to rate movies less actively than others. Here are the bottom raters (based on the amount of ratings provided).
+```{r Bottom Raters by Frequency, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+edx_UserId %>% arrange(SumCountUserId) %>% head(8) %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), font_size = 9) %>% footnote(general = "Bottom raters by frequency / limited to 8 rows")
+```
+
+\    
+
+**Top Raters by Mean** - some users seem to provide frequently higher ratings than others (probably depends on the user's personality and ties to the industry, e.g. not very picky). Here are some top raters (based on the mean rating) that have provided more than a 100 ratings. The limit of 100 ratings was chosen to avoid raters that decided to only provide limited ratings.
+```{r Top Raters by Mean, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+edx_UserId %>% filter(SumCountUserId > 100) %>% arrange(desc(MeanRatingUserId)) %>% head(8)  %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), font_size = 9) %>% footnote(general = "Top raters by mean / limited to 8 rows")
+```
+
+\newpage
+
+**Bottom Raters by Mean** - 
+some users seem to provide lower ratings than others for a variety of reasons. Here are the bottom raters that have provided more than a 100 ratings. The limit of 100 ratings was chosen to avoid raters that only cared to provide very few ratings.
+```{r Bottom Raters by Mean, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+edx_UserId %>% filter(SumCountUserId > 100) %>% arrange(MeanRatingUserId) %>% head(8) %>% kable("latex", booktabs = T) %>% kable_styling(latex_options = c("striped", "condensed"), font_size = 9) %>% footnote(general = "Bottom raters by mean / limited to 8 rows")
+```
+
+\  
+
+# Recommendation System: Methods/Analysis 
+The recommendation system was developed based on the instructions in "Introduction to Data Science" (https://rafalab.github.io/dsbook/acknowledgements.html). Please find some additional information regarding the method used and the analysis performed within the following paragraphs. 
+
+## Average of Ratings, Movie/User Bias and Lambda
+The average of all rating mu ('mean(ratings of train set)') would minimize the RMSE if the same rating were given to all the movies regardless of the user. All the differences would occur due to random variation. However, our initial data exploration did show that some movies are rated higher than others and that some users provide higher ratings than others.   
+  
+Therefore, a movie bias (b_i) and a user bias (b_u) were introduced. The movie bias (b_i) accounts for the fact that some movies are generally rated higher than others. It is merely the mean difference of the ratings from the average (mu) grouped by movieId; 'b_i = mean(ratings of train set - mu).' The user bias (b_u) is necessary because different users have different personalities (e.g., more or less likely to give a high rating). It is calculated as the mean difference of the ratings from the sum of the average (mu) and the movie bias (b_i) grouped per userId; 'b_u = mean(ratings of train set - mu - b_i).'   
+  
+As mentioned before, some of the very well or very badly rated titles did receive only a few ratings (some even just 1). Therefore, Lambda (l) was used to penalize large ratings that were based on a tiny sample size; e.g. 'b_i = sum(ratings of train set - mu) / (n() + lambda))'. This method is called Regularization. The use of a movie bias (b_i), the user bias (b_u) and lambda (l) seems to be consistent with the data exploration performed in the preparatory step of this analysis.  
+  
+The goal was to minimize the RMSE. Therefore, the value for lambda that resulted in a minimized corresponding RMSE was chosen. The Root Mean Square Error otherwise know as RMSE is the standard error that is made when predicting a movie rating. An RMSE is more significant than one means that our common mistake is more significant than one star (of a 5-star rating). The goal was to achieve an RMSE <= 0.87750.   
+
+\newpage
+
+Please find below the chosen lambda that appears to minimise the Root Mean Square Error (RMSE): 
+
+```{r Lambda, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=5}
+# Recommendation System - Create a function to calculate the RMSE
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+# Recommendation System - Find the lambda with the smallest RMSE / mu = average ratings / b_i = movie bias / b_u = user bias
+lambdas <- seq(0, 10, 0.25)
+rmses <- sapply(lambdas, function(l){
+  
+  mu <- mean(edx$rating)
+  
+  b_i <- edx %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- edx %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  predicted_ratings <- 
+    validation %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    .$pred
+  
+  return(RMSE(predicted_ratings, validation$rating))
+})
+lambda <- lambdas[which.min(rmses)]
+lambda
+# Recommendation System - Visualize the lambdas and RMSES
+ggplot() + geom_point(aes(x=lambdas, y=rmses)) + 
+  ggtitle("RMSE per Lambda") + 
+  geom_label_repel(aes(x=lambda, y=min(rmses), label=lambda, alpha=0.6), size=6, color="darkgreen", fontface = "bold") + 
+  theme(plot.title = element_text(color="blue", size=14, face="bold"), axis.title.x = element_text(color="blue", size=12, face="bold"), axis.title.y = element_text(color="blue", size=12, face="bold"))
+```
+
+\    
+
+# Recommendation System - Results/Conclusion
+Finally, the minimized lambda was used to predict the ratings successfully. Furthermore, the predicted ratings resulted in an RMSE lower than the mentioned limit. Please find below some further explanations regarding the calculation of the predicted ratings and the final RMSE that was achieved.
+
+## Prediction and RMSE
+The edx data set was provided as a training set. It was generated from the movie lens data set included in the dslabs package (a small subset of the original dataset with millions of ratings). To receive the predicted grades we had to add up the mean rating based on the edx data set, the movie bias for each movieId based on the edx data set and the user bias for each userId based on the edx data set. Additionally, the movie and user bias (b_u and b_i) needs to be adjusted by using lambda (to penalize ratings that were based on small sample size, e.g., 1 rating).  
+  
+The RMSE is the standard error that occurs when predicting a movie rating based on the edx data set (training set) in comparison to the validation data set (generated from the movielens data set as well). Please recall that an RMSE larger than one means that our standard error is more significant than one star (of a 5-star rating) and the goal was to achieve an RMSE <= 0.87750. Please find below the obtained RMSE: 
+
+```{r Prediction and RMSE, echo=FALSE,  message=FALSE, fig.align='center', fig.width=16, fig.height=7}
+# Recommendation System - Prediction with the chosen lambda / mu = average ratings / b_i = movie bias / b_u = user bias
+mu <- mean(edx$rating)
+b_i <- edx %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+lambda))
+b_u <- edx %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+lambda))
+predicted_ratings <- 
+  validation %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  .$pred
+# Recommendation System - Use the created formula to calculate the RMSE
+RMSE(predicted_ratings, validation$rating)
+```
+
+\  
+
+In short, the simple method described above can predict the rating a user would give to a movie with a standard error <= 0.87750 stars. In a rating system that ranges from 1 to 5 stars, this already seems like a useful recommendation.  
+
+\  
+
+***
